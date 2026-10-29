@@ -24,18 +24,36 @@ const allowedOrigins = configuredOrigin
 
 app.disable('x-powered-by');
 app.use(helmet());
-app.use(
+app.use((req, res, next) => {
+  const requestOrigin = req.get('origin');
+  const requestHost = req.get('host');
+  const isSameOrigin = (() => {
+    if (!requestOrigin || !requestHost) {
+      return false;
+    }
+
+    try {
+      const parsedOrigin = new URL(requestOrigin);
+      return (
+        ['http:', 'https:'].includes(parsedOrigin.protocol) &&
+        parsedOrigin.host === requestHost
+      );
+    } catch {
+      return false;
+    }
+  })();
+
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.has(origin)) {
+      if (!origin || allowedOrigins.has(origin) || isSameOrigin) {
         callback(null, true);
         return;
       }
 
       callback(new Error('Origin is not allowed by CORS'));
     },
-  }),
-);
+  })(req, res, next);
+});
 app.use(express.json({ limit: '100kb' }));
 
 const apiLimiter = rateLimit({
@@ -136,18 +154,14 @@ app.get('/', (req, res, next) => {
   });
 });
 
-const frontendStatic = express.static(__dirname, { index: false });
-app.use((req, res, next) => {
-  const isRootFrontendAsset = req.path === '/styles.css' || req.path === '/script.js';
-  const isAssetDirectoryFile = req.path.startsWith('/assets/');
-
-  if (isRootFrontendAsset || isAssetDirectoryFile) {
-    frontendStatic(req, res, next);
-    return;
-  }
-
-  next();
-});
+app.get(
+  ['/styles.css', '/script.js'],
+  express.static(__dirname, { dotfiles: 'deny', index: false }),
+);
+app.use(
+  '/assets',
+  express.static(path.join(__dirname, 'assets'), { dotfiles: 'deny', index: false }),
+);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
