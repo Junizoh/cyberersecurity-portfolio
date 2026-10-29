@@ -1,60 +1,82 @@
-const fs = require('fs');
-const path = require('path');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 
-const dataDirectory = path.resolve(__dirname, '..', 'data');
-const databasePath = path.join(dataDirectory, 'portfolio.sqlite3');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: true },
+});
 
-fs.mkdirSync(dataDirectory, { recursive: true });
+pool.on('error', () => {
+  console.error('Unexpected error from the PostgreSQL connection pool.');
+});
 
-const db = new Database(databasePath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS contact_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    contact_number TEXT NOT NULL DEFAULT '',
-    message TEXT NOT NULL,
-    submitted_at TEXT NOT NULL
-  );
-`);
-
-const contactColumns = db.prepare('PRAGMA table_info(contact_messages)').all();
-if (!contactColumns.some((column) => column.name === 'contact_number')) {
-  db.exec("ALTER TABLE contact_messages ADD COLUMN contact_number TEXT NOT NULL DEFAULT ''");
+class DatabaseConnectionError extends Error {
+  constructor(cause) {
+    super('PostgreSQL database connection failed.', { cause });
+    this.name = 'DatabaseConnectionError';
+  }
 }
 
-const insertMessageStatement = db.prepare(`
-  INSERT INTO contact_messages (name, email, subject, contact_number, message, submitted_at)
-  VALUES (?, ?, ?, ?, ?, ?)
-`);
+let schemaInitialization;
 
-function saveContactMessage({ name, email, contact_number, subject, message }) {
-  const submittedAt = new Date().toISOString();
-  const result = insertMessageStatement.run(
-    name,
-    email,
-    subject,
-    contact_number || '',
-    message,
-    submittedAt,
-  );
+function initializeDatabase() {
+  if (!process.env.DATABASE_URL) {
+    return Promise.reject(new DatabaseConnectionError());
+  }
 
-  return {
-    id: Number(result.lastInsertRowid),
-    name,
-    email,
-    subject,
-    submittedAt,
-  };
+  if (!schemaInitialization) {
+    schemaInitialization = pool
+      .query(`
+        CREATE TABLE IF NOT EXISTS contact_messages (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          contact_number TEXT NOT NULL DEFAULT '',
+          message TEXT NOT NULL,
+          submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `)
+      .then(() => undefined)
+      .catch((error) => {
+        schemaInitialization = undefined;
+        throw new DatabaseConnectionError(error);
+      });
+  }
+
+  return schemaInitialization;
+}
+
+async function saveContactMessage({ name, email, contact_number, subject, message }) {
+  try {
+    await initializeDatabase();
+    const submittedAt = new Date();
+    const result = await pool.query(
+      `INSERT INTO contact_messages
+        (name, email, subject, contact_number, message, submitted_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, submitted_at`,
+      [name, email, subject, contact_number || '', message, submittedAt],
+    );
+
+    return {
+      id: result.rows[0].id,
+      name,
+      email,
+      subject,
+      submittedAt: result.rows[0].submitted_at.toISOString(),
+    };
+  } catch (error) {
+    if (error instanceof DatabaseConnectionError) {
+      throw error;
+    }
+
+    throw new DatabaseConnectionError(error);
+  }
 }
 
 module.exports = {
-  db,
-  databasePath,
+  DatabaseConnectionError,
+  initializeDatabase,
+  pool,
   saveContactMessage,
 };

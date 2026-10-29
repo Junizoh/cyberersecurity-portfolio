@@ -5,7 +5,7 @@ const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { saveContactMessage } = require('./db/database');
+const database = require('./db/database');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -127,7 +127,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.post('/api/contact', contactLimiter, (req, res, next) => {
+app.post('/api/contact', contactLimiter, async (req, res, next) => {
   const validation = validateContactRequest(req.body);
 
   if (validation.error) {
@@ -136,12 +136,20 @@ app.post('/api/contact', contactLimiter, (req, res, next) => {
   }
 
   try {
-    const savedMessage = saveContactMessage(validation.value);
+    const savedMessage = await database.saveContactMessage(validation.value);
     res.status(201).json({
       message: 'Contact message saved.',
       id: savedMessage.id,
     });
   } catch (error) {
+    if (error instanceof database.DatabaseConnectionError) {
+      console.error('The contact message could not be saved because PostgreSQL is unavailable.');
+      res.status(503).json({
+        error: 'Contact service is temporarily unavailable. Please try again later.',
+      });
+      return;
+    }
+
     next(error);
   }
 });
@@ -186,6 +194,10 @@ app.use((err, req, res, next) => {
 });
 
 if (require.main === module) {
+  database.initializeDatabase().catch(() => {
+    console.error('PostgreSQL initialization failed. Check DATABASE_URL and database availability.');
+  });
+
   app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
   });
