@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -125,6 +126,27 @@ app.post('/api/contact', contactLimiter, (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.get('/', (req, res, next) => {
+  res.sendFile(path.join(__dirname, 'index.html'), (error) => {
+    if (error) {
+      next(error);
+    }
+  });
+});
+
+const frontendStatic = express.static(__dirname, { index: false });
+app.use((req, res, next) => {
+  const isRootFrontendAsset = req.path === '/styles.css' || req.path === '/script.js';
+  const isAssetDirectoryFile = req.path.startsWith('/assets/');
+
+  if (isRootFrontendAsset || isAssetDirectoryFile) {
+    frontendStatic(req, res, next);
+    return;
+  }
+
+  next();
 });
 
 app.use((req, res) => {
